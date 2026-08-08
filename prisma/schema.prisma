@@ -1,0 +1,678 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum UserRole {
+  USER
+  INSTRUCTOR
+  EDITOR
+  ADMIN
+}
+
+enum MembershipBillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum MembershipSubscriptionStatus {
+  INCOMPLETE
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum MembershipPaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum Language {
+  DE
+  EN
+  FA
+}
+
+enum ActivityType {
+  WORKSHOP
+  EVENT
+  COURSE
+}
+
+enum ActivityStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+  COMPLETED
+  ARCHIVED
+}
+
+enum SessionMode {
+  ONLINE
+  IN_PERSON
+  HYBRID
+}
+
+enum RegistrationStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  ATTENDED
+  NO_SHOW
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentProvider {
+  STRIPE
+  PAYPAL
+  MOLLIE
+  BANK_TRANSFER
+}
+
+enum SubscriberStatus {
+  PENDING
+  CONFIRMED
+  UNSUBSCRIBED
+  BOUNCED
+}
+
+enum DonationStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum ApplicationStatus {
+  PENDING
+  REVIEWING
+  CONTACTED
+  ACCEPTED
+  REJECTED
+  ARCHIVED
+}
+
+enum ContactMessageStatus {
+  NEW
+  REVIEWING
+  REPLIED
+  CLOSED
+  SPAM
+}
+
+// ==========================================
+// USER
+// ==========================================
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String?
+  firstName       String
+  lastName        String
+  phone           String?
+  role            UserRole  @default(USER)
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  instructedActivities ActivityInstructor[]
+  registrations        Registration[]
+  orders               Order[]
+  donations            Donation[]
+
+  membershipSubscriptions MembershipSubscription[]
+
+  @@index([role])
+  @@index([createdAt])
+}
+
+model MembershipPlan {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?  @db.Text
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  prices        MembershipPrice[]
+  subscriptions MembershipSubscription[]
+
+  @@index([isActive])
+}
+
+model MembershipPrice {
+  id              String                    @id @default(uuid())
+  planId          String
+  billingInterval MembershipBillingInterval
+  amount          Decimal                   @db.Decimal(10, 2)
+  currency        String                    @default("EUR")
+  provider        PaymentProvider           @default(STRIPE)
+  providerPriceId String?                   @unique
+  isActive        Boolean                   @default(true)
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  plan          MembershipPlan           @relation(fields: [planId], references: [id], onDelete: Restrict)
+  subscriptions MembershipSubscription[]
+
+  @@unique([planId, billingInterval, currency])
+  @@index([planId])
+  @@index([isActive])
+}
+
+model MembershipSubscription {
+  id                     String                       @id @default(uuid())
+  userId                 String
+  planId                 String
+  priceId                String
+  provider               PaymentProvider              @default(STRIPE)
+  providerCustomerId     String?
+  providerSubscriptionId String?                      @unique
+  status                 MembershipSubscriptionStatus @default(INCOMPLETE)
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  cancelAtPeriodEnd      Boolean                      @default(false)
+  cancelledAt            DateTime?
+  endedAt                DateTime?
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+
+  user     User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  plan     MembershipPlan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  price    MembershipPrice     @relation(fields: [priceId], references: [id], onDelete: Restrict)
+  payments MembershipPayment[]
+
+  @@index([userId])
+  @@index([planId])
+  @@index([priceId])
+  @@index([status])
+  @@index([userId, status])
+  @@index([currentPeriodEnd])
+}
+
+model MembershipPayment {
+  id                String                  @id @default(uuid())
+  subscriptionId    String
+  provider          PaymentProvider         @default(STRIPE)
+  providerInvoiceId String?                 @unique
+  providerPaymentId String?                 @unique
+  amount            Decimal                 @db.Decimal(10, 2)
+  currency          String                  @default("EUR")
+  status            MembershipPaymentStatus @default(PENDING)
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  paidAt            DateTime?
+  failedAt          DateTime?
+  refundedAt        DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  subscription MembershipSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([paidAt])
+}
+
+// ==========================================
+// ACTIVITY
+// Course / Workshop / Event
+// ==========================================
+
+model Activity {
+  id                 String         @id @default(uuid())
+  type               ActivityType
+  status             ActivityStatus @default(DRAFT)
+  slug               String         @unique
+  imageUrl           String?
+  bannerUrl          String?
+  isFree             Boolean        @default(false)
+  price              Decimal?       @db.Decimal(10, 2)
+  taxRate            Decimal        @default(0.07) @db.Decimal(5, 4)
+  currency           String         @default("EUR")
+  capacity           Int?
+  maxTicketsPerOrder Int            @default(5)
+  isFeatured         Boolean        @default(false)
+  publishedAt        DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  translations  ActivityTranslation[]
+  instructors   ActivityInstructor[]
+  categories    ActivityCategory[]
+  sessions      ActivitySession[]
+  registrations Registration[]
+  orderItems    OrderItem[]
+
+  @@index([type])
+  @@index([status])
+  @@index([type, status])
+  @@index([status, isFeatured])
+  @@index([publishedAt])
+  @@index([createdAt])
+}
+
+// ==========================================
+// ACTIVITY TRANSLATION
+// ==========================================
+
+model ActivityTranslation {
+  id          String   @id @default(uuid())
+  activityId  String
+  language    Language
+  title       String
+  summary     String?  @db.Text
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, language])
+  @@index([language])
+}
+
+// ==========================================
+// ACTIVITY INSTRUCTOR
+// Many-to-many relation between User and Activity
+// ==========================================
+
+model ActivityInstructor {
+  activityId String
+  userId     String
+  role       String?
+  createdAt  DateTime @default(now())
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([activityId, userId])
+  @@index([userId])
+}
+
+// ==========================================
+// CATEGORY
+// ==========================================
+
+model Category {
+  id        String   @id @default(uuid())
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  translations CategoryTranslation[]
+  activities   ActivityCategory[]
+
+  @@index([createdAt])
+}
+
+// ==========================================
+// CATEGORY TRANSLATION
+// ==========================================
+model CategoryTranslation {
+  id          String   @id @default(uuid())
+  categoryId  String
+  language    Language
+  name        String
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, language])
+  @@index([language])
+}
+
+// ==========================================
+// ACTIVITY CATEGORY
+// Many-to-many relation
+// ==========================================
+
+model ActivityCategory {
+  activityId String
+  categoryId String
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([activityId, categoryId])
+  @@index([categoryId])
+}
+
+// ==========================================
+// ACTIVITY SESSION
+// Each Activity can have one or more sessions
+// ==========================================
+
+model ActivitySession {
+  id         String      @id @default(uuid())
+  activityId String
+  title      String?
+  startAt    DateTime
+  endAt      DateTime
+  timezone   String      @default("Europe/Berlin")
+  mode       SessionMode @default(IN_PERSON)
+  capacity   Int?
+  locationId String?
+  onlineUrl  String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  activity Activity  @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  location Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  registrationSessions RegistrationSession[]
+
+  @@index([activityId])
+  @@index([locationId])
+  @@index([startAt])
+  @@index([activityId, startAt])
+}
+
+// ==========================================
+// LOCATION
+// ==========================================
+
+model Location {
+  id         String   @id @default(uuid())
+  name       String
+  address    String?
+  city       String?
+  postalCode String?
+  country    String?
+  latitude   Decimal? @db.Decimal(9, 6)
+  longitude  Decimal? @db.Decimal(9, 6)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  sessions ActivitySession[]
+
+  @@index([city])
+  @@index([country])
+}
+
+// ==========================================
+// REGISTRATION
+// One registration per user per activity
+// ==========================================
+
+model Registration {
+  id           String             @id @default(uuid())
+  userId       String?
+  activityId   String
+  orderItemId  String?            @unique
+  quantity     Int                @default(1)
+  status       RegistrationStatus @default(PENDING)
+  registeredAt DateTime           @default(now())
+  cancelledAt  DateTime?
+  attendedAt   DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  user      User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  activity  Activity              @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  orderItem OrderItem?            @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+  sessions  RegistrationSession[]
+
+  @@index([userId])
+  @@index([activityId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ==========================================
+// REGISTRATION SESSION
+// Selected sessions for a registration
+// ==========================================
+
+model RegistrationSession {
+  registrationId String
+  sessionId      String
+  createdAt      DateTime @default(now())
+
+  registration Registration    @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  session      ActivitySession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+
+  @@id([registrationId, sessionId])
+  @@index([sessionId])
+}
+
+// ==========================================
+// ORDER
+// Supports logged-in and guest checkout
+// ==========================================
+
+model Order {
+  id                   String      @id @default(uuid())
+  userId               String?
+  email                String
+  firstName            String
+  lastName             String?
+  phone                String?
+  subtotal             Decimal     @db.Decimal(10, 2)
+  discount             Decimal     @default(0) @db.Decimal(10, 2)
+  taxRate              Decimal     @default(0) @db.Decimal(5, 4)
+  taxAmount            Decimal     @default(0) @db.Decimal(10, 2)
+  total                Decimal     @db.Decimal(10, 2)
+  currency             String      @default("EUR")
+  status               OrderStatus @default(PENDING)
+  expiresAt            DateTime?
+  paidAt               DateTime?
+  cancelledAt          DateTime?
+  refundedAt           DateTime?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  guestAccessTokenHash String?     @unique
+
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  orderItems OrderItem[]
+  payments   Payment[]
+
+  @@index([userId])
+  @@index([email])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([createdAt])
+}
+
+// ==========================================
+// ORDER ITEM
+// Stores a snapshot of purchased activity data
+// ==========================================
+
+model OrderItem {
+  id         String   @id @default(uuid())
+  orderId    String
+  activityId String?
+  title      String
+  unitPrice  Decimal  @db.Decimal(10, 2)
+  quantity   Int      @default(1)
+  total      Decimal  @db.Decimal(10, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  order        Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  activity     Activity?     @relation(fields: [activityId], references: [id], onDelete: SetNull)
+  registration Registration?
+
+  @@index([orderId])
+  @@index([activityId])
+}
+
+// ==========================================
+// PAYMENT
+// A Payment must belong to either an Order
+// or a Donation
+// ==========================================
+
+model Payment {
+  id                        String          @id @default(uuid())
+  orderId                   String?
+  donationId                String?
+  provider                  PaymentProvider
+  providerCheckoutSessionId String?         @unique
+  providerPaymentId         String?         @unique
+  providerChargeId          String?         @unique
+  providerCustomerId        String?
+  amount                    Decimal         @db.Decimal(10, 2)
+  currency                  String          @default("EUR")
+  status                    PaymentStatus   @default(PENDING)
+  failureReason             String?         @db.Text
+  paidAt                    DateTime?
+  refundedAt                DateTime?
+  createdAt                 DateTime        @default(now())
+  updatedAt                 DateTime        @updatedAt
+
+  order    Order?    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  donation Donation? @relation(fields: [donationId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([donationId])
+  @@index([provider])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ==========================================
+// DONATION
+// Supports logged-in and guest donations
+// ==========================================
+
+model Donation {
+  id          String         @id @default(uuid())
+  userId      String?
+  donorName   String?
+  donorEmail  String?
+  anonymous   Boolean        @default(false)
+  amount      Decimal        @db.Decimal(10, 2)
+  currency    String         @default("EUR")
+  message     String?        @db.Text
+  status      DonationStatus @default(PENDING)
+  completedAt DateTime?
+  refundedAt  DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  payments Payment[]
+
+  @@index([userId])
+  @@index([donorEmail])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ==========================================
+// NEWSLETTER SUBSCRIBER
+// GDPR and Double Opt-in
+// ==========================================
+
+model Subscriber {
+  id                    String           @id @default(uuid())
+  email                 String           @unique
+  firstName             String?
+  language              Language         @default(EN)
+  status                SubscriberStatus @default(PENDING)
+  consentAt             DateTime?
+  confirmedAt           DateTime?
+  unsubscribedAt        DateTime?
+  confirmTokenHash      String?          @unique
+  confirmTokenExpiresAt DateTime?
+  unsubscribeTokenHash  String?          @unique
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@index([status])
+  @@index([language])
+  @@index([createdAt])
+}
+
+// ==========================================
+// JOIN US APPLICATION
+// ==========================================
+
+model JoinUsApplication {
+  id               String            @id @default(uuid())
+  fullName         String
+  email            String
+  phone            String?
+  cityCountry      String?
+  contributionArea String
+  aboutYourself    String            @db.Text
+  ideaMessage      String            @db.Text
+  language         Language          @default(EN)
+  status           ApplicationStatus @default(PENDING)
+  adminNote        String?           @db.Text
+  reviewedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([contributionArea])
+  @@index([createdAt])
+}
+
+// ==========================================
+// Contact Message 
+// ==========================================
+model ContactMessage {
+  id        String               @id @default(uuid())
+  fullName  String
+  email     String
+  subject   String
+  message   String               @db.Text
+  language  Language             @default(EN)
+  status    ContactMessageStatus @default(NEW)
+  adminNote String?              @db.Text
+  repliedAt DateTime?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([language])
+  @@index([createdAt])
+}
