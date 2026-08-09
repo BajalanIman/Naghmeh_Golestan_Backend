@@ -26,9 +26,26 @@ const app = express();
 /*
   CORS باید قبل از Routeها قرار بگیرد.
 */
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  "https://golestanhub.de",
+  "https://www.golestanhub.de",
+  "https://golestanhub.com",
+  "https://www.golestanhub.com",
+  "https://naghmeh-golestan-front.onrender.com",
+  "http://localhost:5173",
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin(origin, callback) {
+      // درخواست‌های بدون Origin، مثل Postman یا ارتباط سرور‌به‌سرور
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    },
     credentials: true,
   }),
 );
