@@ -1,70 +1,18 @@
 import prisma from "../../config/prisma.js";
 import stripe from "../../config/stripe.js";
 
-function createHttpError(message, statusCode, code) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-
-  if (code) {
-    error.code = code;
-  }
-
-  return error;
+function httpError(message, statusCode, code) {
+  return Object.assign(new Error(message), { statusCode, code });
 }
-
-function serializeDecimal(value) {
-  if (value === null || value === undefined) {
-    return value;
-  }
-
-  return Number(value);
-}
-
-function serializeDonation(donation) {
-  if (!donation) {
-    return donation;
-  }
-
-  return {
-    ...donation,
-    amount: serializeDecimal(donation.amount),
-
-    payments:
-      donation.payments?.map((payment) => ({
-        ...payment,
-        amount: serializeDecimal(payment.amount),
-      })) || [],
-  };
-}
-
-function convertToSmallestCurrencyUnit(amount, currency) {
-  const normalizedCurrency = currency.toUpperCase();
-
-  const zeroDecimalCurrencies = [
-    "BIF",
-    "CLP",
-    "DJF",
-    "GNF",
-    "JPY",
-    "KMF",
-    "KRW",
-    "MGA",
-    "PYG",
-    "RWF",
-    "UGX",
-    "VND",
-    "VUV",
-    "XAF",
-    "XOF",
-    "XPF",
-  ];
-
-  if (zeroDecimalCurrencies.includes(normalizedCurrency)) {
-    return Math.round(Number(amount));
-  }
-
-  return Math.round(Number(amount) * 100);
-}
+const serialize = (donation) => ({
+  ...donation,
+  amount: Number(donation.amount),
+  payments:
+    donation.payments?.map((payment) => ({
+      ...payment,
+      amount: Number(payment.amount),
+    })) || [],
+});
 
 export async function createDonationCheckout({
   user,
@@ -74,221 +22,207 @@ export async function createDonationCheckout({
   amount,
   currency,
   message,
+  language,
+  requestId,
 }) {
-  if (!process.env.STRIPE_SECRET_KEY) {
-    throw createHttpError("Stripe is not configured.", 500);
+  if (
+    !process.env.STRIPE_SECRET_KEY ||
+    process.env.STRIPE_SECRET_KEY === "sk_test_placeholder"
+  ) {
+    throw httpError("Payments are temporarily unavailable.", 503);
   }
-
-  /*
-    اگر User وارد شده باشد، اطلاعات خالی فرم
-    از حساب کاربری تکمیل می‌شود.
-  */
-  const resolvedName =
-    donorName || (user ? `${user.firstName} ${user.lastName}`.trim() : null);
-
-  const resolvedEmail = donorEmail || user?.email || null;
-
-  /*
-    حتی برای Donation ناشناس بهتر است Email
-    برای رسید پرداخت قابل دریافت باشد.
-    اما نام در نمایش عمومی مخفی می‌شود.
-  */
-  if (!resolvedEmail) {
-    throw createHttpError(
-      "An email address is required for the payment receipt.",
-      400,
-      "EMAIL_REQUIRED",
+  // Use a server-controlled origin, never a redirect URL supplied by the browser.
+  let clientUrl;
+  try {
+    const url = new URL(process.env.CLIENT_URL);
+    if (
+      !["https:", "http:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== "/"
+    )
+      throw new Error();
+    if (process.env.NODE_ENV === "production" && url.protocol !== "https:")
+      throw new Error();
+    clientUrl = url.origin;
+  } catch {
+    throw httpError(
+      "Payments are temporarily unavailable: invalid CLIENT_URL.",
+      503,
     );
   }
-
-  const result = await prisma.$transaction(async (transaction) => {
-    const donation = await transaction.donation.create({
+  const resolvedName = anonymous
+    ? null
+    : donorName ||
+      [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+      null;
+  const userId = user?.id || null;
+  // The request UUID is the Donation primary key. Repeating a browser request
+  // therefore reuses both the donation and the Stripe idempotency key.
+  let donation;
+  try {
+    donation = await prisma.donation.create({
       data: {
-        userId: user?.id || null,
-
-        donorName: anonymous ? null : resolvedName,
-
-        donorEmail: resolvedEmail,
-
+        id: requestId,
+        userId,
+        donorName: resolvedName,
+        donorEmail,
         anonymous,
         amount,
         currency,
         message,
-        status: "PENDING",
-      },
-    });
-
-    const payment = await transaction.payment.create({
-      data: {
-        donationId: donation.id,
-        provider: "STRIPE",
-        amount,
-        currency,
-        status: "PROCESSING",
-      },
-    });
-
-    return {
-      donation,
-      payment,
-    };
-  });
-
-  try {
-    const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-
-    const checkoutSession = await stripe.checkout.sessions.create({
-      mode: "payment",
-
-      customer_email: resolvedEmail,
-
-      line_items: [
-        {
-          quantity: 1,
-
-          price_data: {
-            currency: currency.toLowerCase(),
-
-            unit_amount: convertToSmallestCurrencyUnit(amount, currency),
-
-            product_data: {
-              name: "Donation",
-
-              description: anonymous
-                ? "Anonymous donation"
-                : resolvedName
-                  ? `Donation from ${resolvedName}`
-                  : "Website donation",
-
-              metadata: {
-                donationId: result.donation.id,
-              },
-            },
+        payments: {
+          create: {
+            provider: "STRIPE",
+            amount,
+            currency,
+            status: "PROCESSING",
           },
         },
-      ],
-
-      success_url:
-        `${clientUrl}/donation/success` + "?session_id={CHECKOUT_SESSION_ID}",
-
-      cancel_url:
-        `${clientUrl}/donation/cancelled` +
-        `?donation_id=${result.donation.id}`,
-
-      metadata: {
-        paymentType: "DONATION",
-        donationId: result.donation.id,
-        paymentId: result.payment.id,
-        userId: user?.id || "",
       },
-
-      payment_intent_data: {
-        metadata: {
-          paymentType: "DONATION",
-          donationId: result.donation.id,
-          paymentId: result.payment.id,
-          userId: user?.id || "",
-        },
-      },
+      include: { payments: true },
     });
-
-    const updatedPayment = await prisma.payment.update({
-      where: {
-        id: result.payment.id,
-      },
-
-      data: {
-        providerCheckoutSessionId: checkoutSession.id,
-
-        providerPaymentId:
-          typeof checkoutSession.payment_intent === "string"
-            ? checkoutSession.payment_intent
-            : checkoutSession.payment_intent?.id || null,
-
-        providerCustomerId:
-          typeof checkoutSession.customer === "string"
-            ? checkoutSession.customer
-            : checkoutSession.customer?.id || null,
-      },
-    });
-
-    return {
-      checkoutUrl: checkoutSession.url,
-
-      checkoutSessionId: checkoutSession.id,
-
-      donation: serializeDonation({
-        ...result.donation,
-        payments: [updatedPayment],
-      }),
-    };
   } catch (error) {
-    await prisma.$transaction([
-      prisma.payment.update({
-        where: {
-          id: result.payment.id,
-        },
-
-        data: {
-          status: "FAILED",
-          failureReason: error.message || "Stripe Checkout creation failed.",
-        },
-      }),
-
-      prisma.donation.update({
-        where: {
-          id: result.donation.id,
-        },
-
-        data: {
-          status: "FAILED",
-        },
-      }),
-    ]);
-
-    throw error;
+    if (error.code !== "P2002") throw error;
+    donation = await prisma.donation.findUnique({
+      where: { id: requestId },
+      include: { payments: true },
+    });
+    if (!donation) throw error;
   }
-}
-
-export async function getDonationCheckoutStatus({ sessionId, userId }) {
-  const payment = await prisma.payment.findFirst({
-    where: {
-      providerCheckoutSessionId: sessionId,
-
-      donationId: {
-        not: null,
-      },
-    },
-
-    include: {
-      donation: {
-        include: {
-          payments: {
-            orderBy: {
-              createdAt: "desc",
-            },
-          },
-        },
-      },
-    },
-  });
-
-  if (!payment || !payment.donation) {
-    throw createHttpError("Donation payment was not found.", 404);
-  }
-
-  /*
-    اگر Donation متعلق به User خاصی باشد،
-    فقط همان User اجازه مشاهده دارد.
-  */
-  if (payment.donation.userId && payment.donation.userId !== userId) {
-    throw createHttpError(
-      "You do not have permission to view this donation.",
-      403,
+  if (
+    donation.userId !== userId ||
+    donation.donorName !== resolvedName ||
+    donation.donorEmail !== donorEmail ||
+    donation.anonymous !== anonymous ||
+    Number(donation.amount) !== amount ||
+    donation.currency !== currency ||
+    donation.message !== message
+  ) {
+    throw httpError(
+      "The payment request changed. Please submit again.",
+      409,
+      "NEW_REQUEST_REQUIRED",
     );
   }
+  const payment = donation.payments[0];
+  if (!payment) throw httpError("The payment record is unavailable.", 503);
+  if (
+    ["FAILED", "CANCELLED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(
+      payment.status,
+    )
+  ) {
+    throw httpError(
+      "This checkout has ended. Please submit again.",
+      409,
+      "NEW_REQUEST_REQUIRED",
+    );
+  }
+  // Stripe prunes idempotency keys after at least 24 h. Never replay an unknown
+  // session with an old key, which could otherwise create a second checkout.
+  if (
+    !payment.providerCheckoutSessionId &&
+    Date.now() - new Date(donation.createdAt).getTime() > 23 * 60 * 60 * 1000
+  ) {
+    throw httpError(
+      "This payment request has expired. Please submit again.",
+      409,
+      "NEW_REQUEST_REQUIRED",
+    );
+  }
+  const metadata = {
+    paymentType: "DONATION",
+    donationId: donation.id,
+    paymentId: payment.id,
+  };
+  let session;
+  try {
+    session = payment.providerCheckoutSessionId
+      ? await stripe.checkout.sessions.retrieve(
+          payment.providerCheckoutSessionId,
+        )
+      : await stripe.checkout.sessions.create(
+          {
+            mode: "payment",
+            customer_email: donorEmail,
+            locale: language === "DE" ? "de" : "en",
+            adaptive_pricing: { enabled: false },
+            line_items: [
+              {
+                quantity: 1,
+                price_data: {
+                  currency: "eur",
+                  unit_amount: Math.round(amount * 100),
+                  product_data: { name: "Golestan Cultural Hub — Donation" },
+                },
+              },
+            ],
+            submit_type: "donate",
+            success_url: `${clientUrl}/donation/success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${clientUrl}/donation/cancelled`,
+            client_reference_id: donation.id,
+            metadata,
+            payment_intent_data: { metadata, receipt_email: donorEmail },
+          },
+          { idempotencyKey: `donation:${donation.id}`, maxNetworkRetries: 2 },
+        );
+  } catch (error) {
+    console.error(
+      "Donation checkout request failed:",
+      donation.id,
+      error.type || error.code || "stripe_error",
+    );
+    // A timeout is not proof that Stripe failed to create the session.
+    // Retain PENDING and the request ID so a retry recovers the same session.
+    throw httpError(
+      "Unable to open payment. Please retry shortly.",
+      503,
+      "CHECKOUT_UNAVAILABLE",
+    );
+  }
+  await prisma.payment.update({
+    where: { id: payment.id },
+    data: { providerCheckoutSessionId: session.id },
+  });
+  if (session.status === "expired")
+    throw httpError(
+      "This checkout has expired. Please submit again.",
+      409,
+      "NEW_REQUEST_REQUIRED",
+    );
+  const checkoutUrl =
+    session.status === "complete"
+      ? `${clientUrl}/donation/success?session_id=${encodeURIComponent(session.id)}`
+      : session.url;
+  if (!checkoutUrl)
+    throw httpError("The checkout is temporarily unavailable.", 503);
+  return { checkoutUrl, checkoutSessionId: session.id };
+}
 
-  return serializeDonation(payment.donation);
+export async function getDonationCheckoutStatus({ sessionId }) {
+  const payment = await prisma.payment.findUnique({
+    where: { providerCheckoutSessionId: sessionId },
+    select: {
+      amount: true,
+      currency: true,
+      status: true,
+      paidAt: true,
+      donation: { select: { status: true } },
+    },
+  });
+  if (!payment?.donation)
+    throw httpError("Donation payment was not found.", 404);
+  // Possession of the unguessable Stripe session ID grants only this minimal
+  // receipt view. No donor identity, messages, user IDs or provider IDs leak.
+  return {
+    amount: Number(payment.amount),
+    currency: payment.currency,
+    status: payment.donation.status,
+    paymentStatus: payment.status,
+    completedAt: payment.paidAt,
+  };
 }
 
 export async function listUserDonations({
@@ -297,51 +231,42 @@ export async function listUserDonations({
   page = 1,
   limit = 20,
 }) {
-  const safePage = Math.max(Number(page) || 1, 1);
-
-  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
-
-  const where = {
-    userId,
-  };
-
-  if (status) {
-    where.status = status;
+  const safePage = Number(page),
+    safeLimit = Number(limit);
+  if (
+    !Number.isSafeInteger(safePage) ||
+    safePage < 1 ||
+    !Number.isSafeInteger(safeLimit) ||
+    safeLimit < 1 ||
+    safeLimit > 50 ||
+    !Number.isSafeInteger((safePage - 1) * safeLimit)
+  ) {
+    throw httpError("Invalid pagination.", 400);
   }
-
+  if (
+    status &&
+    !["PENDING", "COMPLETED", "FAILED", "CANCELLED", "REFUNDED"].includes(
+      status,
+    )
+  )
+    throw httpError("Invalid donation status.", 400);
+  const where = { userId, ...(status ? { status } : {}) };
   const [donations, total] = await prisma.$transaction([
     prisma.donation.findMany({
       where,
-
-      include: {
-        payments: {
-          orderBy: {
-            createdAt: "desc",
-          },
-        },
-      },
-
-      orderBy: {
-        createdAt: "desc",
-      },
-
+      include: { payments: { orderBy: { createdAt: "desc" } } },
+      orderBy: { createdAt: "desc" },
       skip: (safePage - 1) * safeLimit,
       take: safeLimit,
     }),
-
-    prisma.donation.count({
-      where,
-    }),
+    prisma.donation.count({ where }),
   ]);
-
   return {
-    donations: donations.map(serializeDonation),
-
+    donations: donations.map(serialize),
     pagination: {
       page: safePage,
       limit: safeLimit,
       total,
-
       totalPages: Math.ceil(total / safeLimit),
     },
   };
@@ -349,23 +274,9 @@ export async function listUserDonations({
 
 export async function getUserDonation({ userId, donationId }) {
   const donation = await prisma.donation.findFirst({
-    where: {
-      id: donationId,
-      userId,
-    },
-
-    include: {
-      payments: {
-        orderBy: {
-          createdAt: "desc",
-        },
-      },
-    },
+    where: { id: donationId, userId },
+    include: { payments: { orderBy: { createdAt: "desc" } } },
   });
-
-  if (!donation) {
-    throw createHttpError("Donation not found.", 404);
-  }
-
-  return serializeDonation(donation);
+  if (!donation) throw httpError("Donation not found.", 404);
+  return serialize(donation);
 }

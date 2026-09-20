@@ -1,161 +1,98 @@
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-const allowedCurrencies = ["EUR"];
-
-function hasMaximumTwoDecimals(value) {
-  const valueAsString = String(value);
-
-  if (!valueAsString.includes(".")) {
-    return true;
-  }
-
-  return valueAsString.split(".")[1].length <= 2;
-}
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function validateCreateDonationCheckout(req, res, next) {
-  const { donorName, donorEmail, anonymous, amount, currency, message } =
-    req.body;
-
+  const reject = (message) => res.status(400).json({ success: false, message });
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return reject("Invalid request body.");
+  const {
+    amount,
+    donorName,
+    donorEmail,
+    message,
+    anonymous,
+    currency,
+    language,
+    requestId,
+  } = body;
+  if (
+    !["string", "number"].includes(typeof amount) ||
+    !/^\d+(\.\d{1,2})?$/.test(String(amount))
+  ) {
+    return reject("Enter an amount with at most two decimal places.");
+  }
   const numericAmount = Number(amount);
-
-  if (amount === undefined || amount === null || Number.isNaN(numericAmount)) {
-    return res.status(400).json({
-      success: false,
-      message: "A valid donation amount is required.",
-    });
-  }
-
-  if (numericAmount < 1) {
-    return res.status(400).json({
-      success: false,
-      message: "The minimum donation amount is 1 EUR.",
-    });
-  }
-
-  if (numericAmount > 10000) {
-    return res.status(400).json({
-      success: false,
-      message: "The maximum online donation amount is 10,000 EUR.",
-    });
-  }
-
-  if (!hasMaximumTwoDecimals(amount)) {
-    return res.status(400).json({
-      success: false,
-      message: "The donation amount may contain at most two decimal places.",
-    });
-  }
-
-  if (anonymous !== undefined && typeof anonymous !== "boolean") {
-    return res.status(400).json({
-      success: false,
-      message: "anonymous must be true or false.",
-    });
-  }
-
   if (
-    donorName !== undefined &&
-    donorName !== null &&
-    typeof donorName !== "string"
+    !Number.isFinite(numericAmount) ||
+    numericAmount < 1 ||
+    numericAmount > 10000
   ) {
-    return res.status(400).json({
-      success: false,
-      message: "Donor name is invalid.",
-    });
+    return reject("The donation amount must be between 1 and 10,000 EUR.");
   }
-
-  if (donorName?.trim().length > 150) {
-    return res.status(400).json({
-      success: false,
-      message: "Donor name is too long.",
-    });
+  for (const [name, value, max] of [
+    ["Donor name", donorName, 150],
+    ["Email", donorEmail, 254],
+    ["Message", message, 2000],
+  ]) {
+    if (
+      value != null &&
+      (typeof value !== "string" || value.trim().length > max)
+    )
+      return reject(`${name} is invalid or too long.`);
   }
-
+  const email = (donorEmail?.trim() || req.user?.email || "").toLowerCase();
+  if (!emailPattern.test(email) || email.length > 254)
+    return reject("A valid email address is required.");
+  if (anonymous !== undefined && typeof anonymous !== "boolean")
+    return reject("anonymous must be a boolean.");
   if (
-    donorEmail !== undefined &&
-    donorEmail !== null &&
-    typeof donorEmail !== "string"
-  ) {
-    return res.status(400).json({
-      success: false,
-      message: "Donor email is invalid.",
-    });
-  }
-
-  if (donorEmail && !emailPattern.test(donorEmail.trim().toLowerCase())) {
-    return res.status(400).json({
-      success: false,
-      message: "Please enter a valid email address.",
-    });
-  }
-
-  const normalizedCurrency = (currency || "EUR").trim().toUpperCase();
-
-  if (!allowedCurrencies.includes(normalizedCurrency)) {
-    return res.status(400).json({
-      success: false,
-      message: "Only EUR donations are currently supported.",
-    });
-  }
-
+    currency !== undefined &&
+    (typeof currency !== "string" || currency.trim().toUpperCase() !== "EUR")
+  )
+    return reject("Only EUR is supported.");
   if (
-    message !== undefined &&
-    message !== null &&
-    typeof message !== "string"
-  ) {
-    return res.status(400).json({
-      success: false,
-      message: "Donation message is invalid.",
-    });
-  }
-
-  if (message?.trim().length > 2000) {
-    return res.status(400).json({
-      success: false,
-      message: "Donation message may contain at most 2,000 characters.",
-    });
-  }
-
-  req.body.amount = numericAmount;
-  req.body.currency = normalizedCurrency;
-  req.body.anonymous = Boolean(anonymous);
-  req.body.donorName = donorName?.trim() || null;
-  req.body.donorEmail = donorEmail?.trim().toLowerCase() || null;
-  req.body.message = message?.trim() || null;
-
-  next();
-}
-
-export function validateDonationId(req, res, next) {
-  const { id } = req.params;
-
-  if (!id || typeof id !== "string") {
-    return res.status(400).json({
-      success: false,
-      message: "A valid donation ID is required.",
-    });
-  }
-
-  req.params.id = id.trim();
-
+    language !== undefined &&
+    (typeof language !== "string" ||
+      !["EN", "DE", "FA"].includes(language.toUpperCase()))
+  )
+    return reject("Invalid language.");
+  if (typeof requestId !== "string" || !uuidPattern.test(requestId))
+    return reject("A UUID v4 requestId is required.");
+  req.body = {
+    amount: numericAmount,
+    currency: "EUR",
+    donorName: donorName?.trim() || null,
+    donorEmail: email,
+    message: message?.trim() || null,
+    anonymous: anonymous ?? false,
+    language: language?.toUpperCase() || "EN",
+    requestId: requestId.toLowerCase(),
+  };
   next();
 }
 
 export function validateDonationSessionId(req, res, next) {
-  const { sessionId } = req.params;
-
   if (
-    !sessionId ||
-    typeof sessionId !== "string" ||
-    !sessionId.startsWith("cs_")
+    typeof req.params.sessionId !== "string" ||
+    !/^cs_(test_|live_)?[A-Za-z0-9]{10,250}$/.test(req.params.sessionId)
   ) {
-    return res.status(400).json({
-      success: false,
-      message: "A valid Stripe Checkout Session ID is required.",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid Checkout Session ID." });
   }
+  next();
+}
 
-  req.params.sessionId = sessionId.trim();
-
+export function validateDonationId(req, res, next) {
+  if (
+    typeof req.params.id !== "string" ||
+    !/^[0-9a-f-]{36}$/i.test(req.params.id)
+  ) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid donation ID." });
+  }
   next();
 }
