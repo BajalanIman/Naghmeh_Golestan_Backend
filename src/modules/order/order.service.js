@@ -168,11 +168,29 @@ function findTranslation(translations, preferredLanguage = "EN") {
   );
 }
 
-function calculateOrderAmounts(activity, quantity) {
+function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
   const unitPrice = Number(activity.price || 0);
   const taxRate = Number(activity.taxRate || 0);
 
-  const subtotal = roundMoney(unitPrice * quantity);
+  /*
+    SINGLE:
+      price × participants
+
+    MULTIPLE:
+      price × participants × selected sessions
+
+    ALL:
+      price × participants
+      (the Activity price represents the complete course/activity)
+  */
+  const chargeableSessionCount =
+    activity.sessionSelectionMode === "MULTIPLE"
+      ? Math.max(Number(selectedSessionCount) || 0, 1)
+      : 1;
+
+  const subtotal = roundMoney(
+    unitPrice * quantity * chargeableSessionCount,
+  );
   const discount = 0;
   const taxableAmount = roundMoney(subtotal - discount);
   const taxAmount = roundMoney(taxableAmount * taxRate);
@@ -181,6 +199,7 @@ function calculateOrderAmounts(activity, quantity) {
   return {
     unitPrice,
     quantity,
+    sessionCount: chargeableSessionCount,
     subtotal,
     discount,
     taxRate,
@@ -191,7 +210,11 @@ function calculateOrderAmounts(activity, quantity) {
   };
 }
 
-function resolveSelectedSessions(activitySessions, requestedSessionIds = []) {
+function resolveSelectedSessions(
+  activitySessions,
+  requestedSessionIds = [],
+  sessionSelectionMode = "ALL",
+) {
   if (activitySessions.length === 0) {
     if (requestedSessionIds.length > 0) {
       throw createHttpError(
@@ -211,7 +234,25 @@ function resolveSelectedSessions(activitySessions, requestedSessionIds = []) {
     return activitySessions;
   }
 
-  if (requestedSessionIds.length === 0) {
+  if (sessionSelectionMode === "ALL") {
+    return activitySessions;
+  }
+
+  if (
+    sessionSelectionMode === "SINGLE" &&
+    requestedSessionIds.length !== 1
+  ) {
+    throw createHttpError(
+      "Please select exactly one session.",
+      400,
+      "SINGLE_SESSION_REQUIRED",
+    );
+  }
+
+  if (
+    sessionSelectionMode === "MULTIPLE" &&
+    requestedSessionIds.length === 0
+  ) {
     throw createHttpError(
       "Please select at least one session.",
       400,
@@ -426,7 +467,11 @@ async function expireOldPendingOrders(transaction) {
   });
 }
 
-export async function createActivityQuote({ activityId, quantity }) {
+export async function createActivityQuote({
+  activityId,
+  sessionIds = [],
+  quantity,
+}) {
   const activity = await prisma.activity.findUnique({
     where: {
       id: activityId,
@@ -482,6 +527,24 @@ export async function createActivityQuote({ activityId, quantity }) {
     );
   }
 
+  const selectedSessions = resolveSelectedSessions(
+    activity.sessions,
+    sessionIds,
+    activity.sessionSelectionMode,
+  );
+
+  const now = new Date();
+
+  for (const session of selectedSessions) {
+    if (session.endAt <= now) {
+      throw createHttpError(
+        "A selected session has already ended.",
+        409,
+        "SESSION_ENDED",
+      );
+    }
+  }
+
   const occupied = await getOccupiedActivitySeats(prisma, activity.id);
 
   const remaining =
@@ -497,7 +560,17 @@ export async function createActivityQuote({ activityId, quantity }) {
     );
   }
 
-  const amounts = calculateOrderAmounts(activity, quantity);
+  await checkSessionCapacity({
+    transaction: prisma,
+    sessions: selectedSessions,
+    quantity,
+  });
+
+  const amounts = calculateOrderAmounts(
+    activity,
+    quantity,
+    selectedSessions.length,
+  );
 
   return {
     activityId: activity.id,
@@ -609,6 +682,7 @@ export async function createActivityOrder({
     const selectedSessions = resolveSelectedSessions(
       activity.sessions,
       sessionIds,
+      activity.sessionSelectionMode,
     );
 
     const now = new Date();
@@ -644,7 +718,11 @@ export async function createActivityOrder({
       throw createHttpError("This activity does not have a title.", 500);
     }
 
-    const amounts = calculateOrderAmounts(activity, quantity);
+    const amounts = calculateOrderAmounts(
+      activity,
+      quantity,
+      selectedSessions.length,
+    );
 
     /*
         برای Guest یک Token تصادفی تولید می‌کنیم.

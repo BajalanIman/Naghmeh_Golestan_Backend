@@ -1,7 +1,7 @@
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function validateOrderQuote(req, res, next) {
-  const { activityId, quantity } = req.body;
+  const { activityId, sessionIds, quantity } = req.body;
 
   if (!activityId || typeof activityId !== "string") {
     return res.status(400).json({
@@ -23,8 +23,29 @@ export function validateOrderQuote(req, res, next) {
     });
   }
 
+  if (sessionIds !== undefined && !Array.isArray(sessionIds)) {
+    return res.status(400).json({
+      success: false,
+      message: "sessionIds must be an array.",
+    });
+  }
+
+  if (
+    Array.isArray(sessionIds) &&
+    sessionIds.some((sessionId) => !sessionId || typeof sessionId !== "string")
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "Every session ID must be a valid string.",
+    });
+  }
+
   req.body.activityId = activityId.trim();
   req.body.quantity = normalizedQuantity;
+
+  req.body.sessionIds = Array.isArray(sessionIds)
+    ? [...new Set(sessionIds.map((id) => id.trim()))]
+    : [];
 
   next();
 }

@@ -18,6 +18,7 @@ export async function orderQuoteController(req, res, next) {
   try {
     const quote = await createActivityQuote({
       activityId: req.body.activityId,
+      sessionIds: req.body.sessionIds,
       quantity: req.body.quantity,
     });
 
