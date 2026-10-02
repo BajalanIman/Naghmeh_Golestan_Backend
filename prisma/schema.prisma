@@ -71,6 +71,12 @@ enum SessionMode {
   HYBRID
 }
 
+enum SessionSelectionMode {
+  ALL
+  SINGLE
+  MULTIPLE
+}
+
 enum RegistrationStatus {
   PENDING
   CONFIRMED
@@ -271,6 +277,7 @@ model Activity {
   taxRate            Decimal        @default(0.07) @db.Decimal(5, 4)
   currency           String         @default("EUR")
   capacity           Int?
+  sessionSelectionMode SessionSelectionMode @default(ALL)
   maxTicketsPerOrder Int            @default(5)
   isFeatured         Boolean        @default(false)
   publishedAt        DateTime?
