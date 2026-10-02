@@ -339,6 +339,7 @@ export async function createActivity(data) {
       price: data.isFree ? null : data.price,
       currency: data.currency || "EUR",
       capacity: data.capacity || null,
+      sessionSelectionMode: data.sessionSelectionMode || "ALL",
       isFeatured: data.isFeatured || false,
 
       publishedAt: (data.status || "DRAFT") === "PUBLISHED" ? new Date() : null,
@@ -433,6 +434,7 @@ export async function updateActivity(id, data) {
       price: data.isFree === true ? null : data.price,
       currency: data.currency,
       capacity: data.capacity,
+      sessionSelectionMode: data.sessionSelectionMode,
       isFeatured: data.isFeatured,
     },
     include: activityDetailsInclude,

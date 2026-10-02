@@ -8,6 +8,7 @@ const allowedStatuses = [
   "ARCHIVED",
 ];
 
+const allowedSessionSelectionModes = ["ALL", "SINGLE", "MULTIPLE"];
 const allowedLanguages = ["EN", "DE", "FA"];
 
 const allowedSessionModes = ["ONLINE", "IN_PERSON", "HYBRID"];
@@ -69,6 +70,7 @@ export function validateCreateActivity(req, res, next) {
     categoryIds,
     instructors,
     sessions,
+    sessionSelectionMode,
   } = req.body;
 
   if (!type || !allowedTypes.includes(type)) {
@@ -155,6 +157,16 @@ export function validateCreateActivity(req, res, next) {
     return res.status(400).json({
       success: false,
       message: "isFeatured must be true or false.",
+    });
+  }
+
+  if (
+    sessionSelectionMode !== undefined &&
+    !allowedSessionSelectionModes.includes(sessionSelectionMode)
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "sessionSelectionMode must be ALL, SINGLE, or MULTIPLE.",
     });
   }
 
@@ -288,6 +300,7 @@ export function validateUpdateActivity(req, res, next) {
     currency,
     capacity,
     isFeatured,
+    sessionSelectionMode,
   } = req.body;
 
   if (type !== undefined && !allowedTypes.includes(type)) {
@@ -361,6 +374,16 @@ export function validateUpdateActivity(req, res, next) {
     return res.status(400).json({
       success: false,
       message: "isFeatured must be true or false.",
+    });
+  }
+
+  if (
+    sessionSelectionMode !== undefined &&
+    !allowedSessionSelectionModes.includes(sessionSelectionMode)
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "sessionSelectionMode must be ALL, SINGLE, or MULTIPLE.",
     });
   }
 

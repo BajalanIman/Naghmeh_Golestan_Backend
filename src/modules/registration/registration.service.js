@@ -152,7 +152,11 @@ function findTranslation(translations, preferredLanguage = "EN") {
   );
 }
 
-function resolveSelectedSessions(activitySessions, requestedSessionIds = []) {
+function resolveSelectedSessions(
+  activitySessions,
+  requestedSessionIds = [],
+  sessionSelectionMode = "ALL",
+) {
   if (activitySessions.length === 0) {
     if (requestedSessionIds.length > 0) {
       throw createHttpError(
@@ -168,7 +172,19 @@ function resolveSelectedSessions(activitySessions, requestedSessionIds = []) {
     return activitySessions;
   }
 
-  if (requestedSessionIds.length === 0) {
+  if (sessionSelectionMode === "ALL") {
+    return activitySessions;
+  }
+
+  if (sessionSelectionMode === "SINGLE" && requestedSessionIds.length !== 1) {
+    throw createHttpError(
+      "Please select exactly one session.",
+      400,
+      "SINGLE_SESSION_REQUIRED",
+    );
+  }
+
+  if (sessionSelectionMode === "MULTIPLE" && requestedSessionIds.length === 0) {
     throw createHttpError(
       "Please select at least one session.",
       400,
@@ -386,6 +402,7 @@ export async function createFreeRegistration({
     const selectedSessions = resolveSelectedSessions(
       activity.sessions,
       sessionIds,
+      activity.sessionSelectionMode,
     );
 
     const now = new Date();
