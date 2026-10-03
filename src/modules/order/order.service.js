@@ -169,24 +169,11 @@ function findTranslation(translations, preferredLanguage = "EN") {
 }
 
 function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
-  const unitPrice = Number(activity.price || 0);
+  const unitPrice = activity.isFree ? 0 : Number(activity.price || 0);
   const taxRate = Number(activity.taxRate || 0);
 
-  /*
-    SINGLE:
-      price × participants
-
-    MULTIPLE:
-      price × participants × selected sessions
-
-    ALL:
-      price × participants
-      (the Activity price represents the complete course/activity)
-  */
-  const chargeableSessionCount =
-    activity.sessionSelectionMode === "MULTIPLE"
-      ? Math.max(Number(selectedSessionCount) || 0, 1)
-      : 1;
+  // Activity.price is the price per session and per person in EVERY mode.
+  const chargeableSessionCount = Math.max(Number(selectedSessionCount) || 0, 1);
 
   const subtotal = roundMoney(
     unitPrice * quantity * chargeableSessionCount,
@@ -264,7 +251,7 @@ function resolveSelectedSessions(
     activitySessions.map((session) => [session.id, session]),
   );
 
-  return requestedSessionIds.map((sessionId) => {
+  return [...new Set(requestedSessionIds)].map((sessionId) => {
     const session = sessionsById.get(sessionId);
 
     if (!session) {
@@ -879,7 +866,7 @@ export async function getUserOrder({ userId, orderId }) {
 }
 
 export async function cancelPendingOrder({ userId, orderId }) {
-  return prisma.$transaction(async (transaction) => {
+  return runSerializableTransaction(async (transaction) => {
     const order = await transaction.order.findFirst({
       where: {
         id: orderId,
