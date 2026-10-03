@@ -172,8 +172,20 @@ function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
   const unitPrice = activity.isFree ? 0 : Number(activity.price || 0);
   const taxRate = Number(activity.taxRate || 0);
 
-  // Activity.price is the price per session and per person in EVERY mode.
-  const chargeableSessionCount = Math.max(Number(selectedSessionCount) || 0, 1);
+  /*
+    Pricing rule:
+
+    COURSE
+    - activity.price is the price for the COMPLETE course per participant.
+    - All course sessions are included.
+    - The number of sessions must NOT multiply the course price.
+
+    Other activity types (for example WORKSHOP)
+    - activity.price is charged per selected session and per participant.
+  */
+  const sessionCount = Math.max(Number(selectedSessionCount) || 0, 0);
+  const chargeableSessionCount =
+    activity.type === "COURSE" ? 1 : Math.max(sessionCount, 1);
 
   const subtotal = roundMoney(
     unitPrice * quantity * chargeableSessionCount,
@@ -186,7 +198,8 @@ function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
   return {
     unitPrice,
     quantity,
-    sessionCount: chargeableSessionCount,
+    sessionCount,
+    chargeableSessionCount,
     subtotal,
     discount,
     taxRate,
@@ -201,6 +214,7 @@ function resolveSelectedSessions(
   activitySessions,
   requestedSessionIds = [],
   sessionSelectionMode = "ALL",
+  activityType = null,
 ) {
   if (activitySessions.length === 0) {
     if (requestedSessionIds.length > 0) {
@@ -211,6 +225,14 @@ function resolveSelectedSessions(
     }
 
     return [];
+  }
+
+  /*
+    COURSE is always booked as the complete set of sessions.
+    Client-provided sessionIds cannot turn a course into partial booking.
+  */
+  if (activityType === "COURSE") {
+    return activitySessions;
   }
 
   /*
@@ -518,6 +540,7 @@ export async function createActivityQuote({
     activity.sessions,
     sessionIds,
     activity.sessionSelectionMode,
+    activity.type,
   );
 
   const now = new Date();
@@ -670,6 +693,7 @@ export async function createActivityOrder({
       activity.sessions,
       sessionIds,
       activity.sessionSelectionMode,
+      activity.type,
     );
 
     const now = new Date();
