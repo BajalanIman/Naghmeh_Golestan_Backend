@@ -637,6 +637,18 @@ async function checkActivityCapacity({ transaction, activity, quantity }) {
 
 
 
+  // For a COURSE with alternative time slots, activity.capacity is the
+  // capacity of each slot. It must not be treated as one global cap shared
+  // by all alternative slots.
+  if (
+    activity.type === "COURSE" &&
+    courseHasAlternativeTimeSlots(activity.sessions || [])
+  ) {
+    return;
+  }
+
+
+
   const occupied = await getOccupiedActivitySeats(transaction, activity.id);
 
 
@@ -663,11 +675,34 @@ async function checkActivityCapacity({ transaction, activity, quantity }) {
 
 
 
-async function checkSessionCapacity({ transaction, sessions, quantity }) {
+async function checkSessionCapacity({
+
+  transaction,
+
+  activity,
+
+  sessions,
+
+  quantity,
+
+}) {
+
+  const useCourseSlotCapacity =
+    activity?.type === "COURSE" &&
+    courseHasAlternativeTimeSlots(activity.sessions || []) &&
+    activity.capacity !== null;
+
+
 
   for (const session of sessions) {
 
-    if (session.capacity === null) {
+    const capacity = useCourseSlotCapacity
+      ? Number(activity.capacity)
+      : session.capacity;
+
+
+
+    if (capacity === null || capacity === undefined) {
 
       continue;
 
@@ -679,7 +714,7 @@ async function checkSessionCapacity({ transaction, sessions, quantity }) {
 
 
 
-    const remaining = Math.max(session.capacity - occupied, 0);
+    const remaining = Math.max(Number(capacity) - occupied, 0);
 
 
 
@@ -912,6 +947,8 @@ export async function createFreeRegistration({
     await checkSessionCapacity({
 
       transaction,
+
+      activity,
 
       sessions: selectedSessions,
 
@@ -1437,6 +1474,12 @@ export async function getActivityAvailability(activityId) {
 
 
 
+  const hasAlternativeCourseTimeSlots =
+    activity.type === "COURSE" &&
+    courseHasAlternativeTimeSlots(activity.sessions || []);
+
+
+
   const occupied = await getOccupiedActivitySeats(prisma, activity.id);
 
 
@@ -1446,6 +1489,16 @@ export async function getActivityAvailability(activityId) {
     activity.sessions.map(async (session) => {
 
       const sessionOccupied = await getOccupiedSessionSeats(prisma, session.id);
+
+
+
+      // For alternative COURSE time slots, the course-level capacity is the
+      // capacity of each slot. This also keeps old records safe if their
+      // individual session capacity was stored too low.
+      const effectiveCapacity =
+        hasAlternativeCourseTimeSlots && activity.capacity !== null
+          ? Number(activity.capacity)
+          : session.capacity;
 
 
 
@@ -1459,7 +1512,7 @@ export async function getActivityAvailability(activityId) {
 
         endAt: session.endAt,
 
-        capacity: session.capacity,
+        capacity: effectiveCapacity,
 
 
 
@@ -1469,23 +1522,43 @@ export async function getActivityAvailability(activityId) {
 
         remaining:
 
-          session.capacity === null
+          effectiveCapacity === null || effectiveCapacity === undefined
 
             ? null
 
-            : Math.max(session.capacity - sessionOccupied, 0),
+            : Math.max(Number(effectiveCapacity) - sessionOccupied, 0),
 
 
 
         isFull:
 
-          session.capacity !== null && sessionOccupied >= session.capacity,
+          effectiveCapacity !== null &&
+          effectiveCapacity !== undefined &&
+          sessionOccupied >= Number(effectiveCapacity),
 
       };
 
     }),
 
   );
+
+
+
+  // A time-slot course has independent capacity per slot, so there is no
+  // meaningful single activity-level "remaining" number. The frontend uses
+  // the selected slot's session availability instead.
+  const activityRemaining = hasAlternativeCourseTimeSlots
+    ? null
+    : activity.capacity === null
+      ? null
+      : Math.max(activity.capacity - occupied, 0);
+
+
+
+  const activityIsFull = hasAlternativeCourseTimeSlots
+    ? sessionAvailability.length > 0 &&
+      sessionAvailability.every((session) => session.isFull)
+    : activity.capacity !== null && occupied >= activity.capacity;
 
 
 
@@ -1499,19 +1572,9 @@ export async function getActivityAvailability(activityId) {
 
     occupied,
 
+    remaining: activityRemaining,
 
-
-    remaining:
-
-      activity.capacity === null
-
-        ? null
-
-        : Math.max(activity.capacity - occupied, 0),
-
-
-
-    isFull: activity.capacity !== null && occupied >= activity.capacity,
+    isFull: activityIsFull,
 
 
 

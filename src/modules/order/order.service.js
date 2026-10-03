@@ -468,6 +468,16 @@ async function checkActivityCapacity({ transaction, activity, quantity }) {
     return;
   }
 
+  // For a COURSE with alternative time slots, activity.capacity is the
+  // capacity of EACH time slot, not a global cap shared by all slots.
+  // Capacity is therefore enforced by checkSessionCapacity below.
+  if (
+    activity.type === "COURSE" &&
+    courseHasAlternativeTimeSlots(activity.sessions || [])
+  ) {
+    return;
+  }
+
   const occupied = await getOccupiedActivitySeats(transaction, activity.id);
 
   const remaining = Math.max(activity.capacity - occupied, 0);
@@ -481,15 +491,29 @@ async function checkActivityCapacity({ transaction, activity, quantity }) {
   }
 }
 
-async function checkSessionCapacity({ transaction, sessions, quantity }) {
+async function checkSessionCapacity({
+  transaction,
+  activity,
+  sessions,
+  quantity,
+}) {
+  const useCourseSlotCapacity =
+    activity?.type === "COURSE" &&
+    courseHasAlternativeTimeSlots(activity.sessions || []) &&
+    activity.capacity !== null;
+
   for (const session of sessions) {
-    if (session.capacity === null) {
+    const capacity = useCourseSlotCapacity
+      ? Number(activity.capacity)
+      : session.capacity;
+
+    if (capacity === null || capacity === undefined) {
       continue;
     }
 
     const occupied = await getOccupiedSessionSeats(transaction, session.id);
 
-    const remaining = Math.max(session.capacity - occupied, 0);
+    const remaining = Math.max(Number(capacity) - occupied, 0);
 
     if (quantity > remaining) {
       throw createHttpError(
@@ -650,10 +674,17 @@ export async function createActivityQuote({
     }
   }
 
-  const occupied = await getOccupiedActivitySeats(prisma, activity.id);
+  const hasAlternativeCourseTimeSlots =
+    activity.type === "COURSE" &&
+    courseHasAlternativeTimeSlots(activity.sessions || []);
 
-  const remaining =
-    activity.capacity === null
+  const occupied = hasAlternativeCourseTimeSlots
+    ? null
+    : await getOccupiedActivitySeats(prisma, activity.id);
+
+  const remaining = hasAlternativeCourseTimeSlots
+    ? null
+    : activity.capacity === null
       ? null
       : Math.max(activity.capacity - occupied, 0);
 
@@ -667,6 +698,7 @@ export async function createActivityQuote({
 
   await checkSessionCapacity({
     transaction: prisma,
+    activity,
     sessions: selectedSessions,
     quantity,
   });
@@ -811,6 +843,7 @@ export async function createActivityOrder({
 
     await checkSessionCapacity({
       transaction,
+      activity,
       sessions: selectedSessions,
       quantity,
     });
