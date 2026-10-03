@@ -338,6 +338,37 @@ function resolveSelectedSessions(
     );
   }
 
+  /*
+    WORKSHOP:
+    each listed session is an independently selectable workshop date.
+    The client may choose one or more sessions, so NEVER expand the
+    selection to all sessions just because sessionSelectionMode is absent
+    or has an old/default ALL value in the database.
+  */
+  if (activityType === "WORKSHOP") {
+    if (uniqueRequestedSessionIds.length === 0) {
+      throw createHttpError(
+        "Please select at least one workshop session.",
+        400,
+        "SESSION_REQUIRED",
+      );
+    }
+
+    return uniqueRequestedSessionIds.map((sessionId) => {
+      const session = sessionsById.get(sessionId);
+
+      if (!session) {
+        throw createHttpError(
+          "One or more selected sessions do not belong to this activity.",
+          400,
+          "INVALID_SESSION",
+        );
+      }
+
+      return session;
+    });
+  }
+
   if (activitySessions.length === 1 && uniqueRequestedSessionIds.length === 0) {
     return activitySessions;
   }
