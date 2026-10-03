@@ -172,20 +172,12 @@ function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
   const unitPrice = activity.isFree ? 0 : Number(activity.price || 0);
   const taxRate = Number(activity.taxRate || 0);
 
-  /*
-    Pricing rule:
+  const actualSessionCount = Math.max(Number(selectedSessionCount) || 0, 1);
 
-    COURSE
-    - activity.price is the price for the COMPLETE course per participant.
-    - All course sessions are included.
-    - The number of sessions must NOT multiply the course price.
-
-    Other activity types (for example WORKSHOP)
-    - activity.price is charged per selected session and per participant.
-  */
-  const sessionCount = Math.max(Number(selectedSessionCount) || 0, 0);
+  // COURSE: Activity.price is the price for the whole course per participant.
+  // WORKSHOP/EVENT: Activity.price is charged per selected session per participant.
   const chargeableSessionCount =
-    activity.type === "COURSE" ? 1 : Math.max(sessionCount, 1);
+    activity.type === "COURSE" ? 1 : actualSessionCount;
 
   const subtotal = roundMoney(
     unitPrice * quantity * chargeableSessionCount,
@@ -198,7 +190,7 @@ function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
   return {
     unitPrice,
     quantity,
-    sessionCount,
+    sessionCount: actualSessionCount,
     chargeableSessionCount,
     subtotal,
     discount,
@@ -208,6 +200,67 @@ function calculateOrderAmounts(activity, quantity, selectedSessionCount = 1) {
     total,
     currency: activity.currency,
   };
+}
+
+function getSessionTimeZone(session) {
+  return session?.timezone || "Europe/Berlin";
+}
+
+function formatSessionDatePart(dateValue, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(dateValue));
+
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function formatSessionTimePart(dateValue, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(dateValue));
+
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return `${values.hour}:${values.minute}`;
+}
+
+function getSessionLocalDateKey(session) {
+  return formatSessionDatePart(session.startAt, getSessionTimeZone(session));
+}
+
+function getSessionTimeSlotKey(session) {
+  const timeZone = getSessionTimeZone(session);
+  const start = formatSessionTimePart(session.startAt, timeZone);
+  const end = formatSessionTimePart(session.endAt, timeZone);
+
+  return `${timeZone}|${start}-${end}`;
+}
+
+function courseHasAlternativeTimeSlots(activitySessions) {
+  const sessionsPerDate = new Map();
+
+  for (const session of activitySessions) {
+    const dateKey = getSessionLocalDateKey(session);
+    sessionsPerDate.set(dateKey, (sessionsPerDate.get(dateKey) || 0) + 1);
+  }
+
+  return [...sessionsPerDate.values()].some((count) => count > 1);
 }
 
 function resolveSelectedSessions(
@@ -227,19 +280,65 @@ function resolveSelectedSessions(
     return [];
   }
 
-  /*
-    COURSE is always booked as the complete set of sessions.
-    Client-provided sessionIds cannot turn a course into partial booking.
-  */
-  if (activityType === "COURSE") {
-    return activitySessions;
-  }
+  const uniqueRequestedSessionIds = [...new Set(requestedSessionIds)];
+  const sessionsById = new Map(
+    activitySessions.map((session) => [session.id, session]),
+  );
 
   /*
-    اگر Activity فقط یک Session داشته باشد،
-    همان Session به شکل خودکار انتخاب می‌شود.
+    COURSE:
+    - اگر در یک تاریخ چند Session وجود داشته باشد، آن‌ها Time Slotهای جایگزین‌اند.
+    - کاربر یک Time Slot را انتخاب می‌کند.
+    - Backend تمام تاریخ‌های متعلق به همان Time Slot را ثبت می‌کند.
+    - اگر Time Slot جایگزین وجود نداشته باشد، تمام Sessionهای دوره اجباری‌اند.
   */
-  if (activitySessions.length === 1 && requestedSessionIds.length === 0) {
+  if (activityType === "COURSE") {
+    if (!courseHasAlternativeTimeSlots(activitySessions)) {
+      return activitySessions;
+    }
+
+    if (uniqueRequestedSessionIds.length === 0) {
+      throw createHttpError(
+        "Please select one course time slot.",
+        400,
+        "COURSE_TIME_SLOT_REQUIRED",
+      );
+    }
+
+    const requestedSessions = uniqueRequestedSessionIds.map((sessionId) => {
+      const session = sessionsById.get(sessionId);
+
+      if (!session) {
+        throw createHttpError(
+          "One or more selected sessions do not belong to this activity.",
+          400,
+          "INVALID_SESSION",
+        );
+      }
+
+      return session;
+    });
+
+    const selectedSlotKeys = new Set(
+      requestedSessions.map((session) => getSessionTimeSlotKey(session)),
+    );
+
+    if (selectedSlotKeys.size !== 1) {
+      throw createHttpError(
+        "Please select exactly one course time slot.",
+        400,
+        "MULTIPLE_COURSE_TIME_SLOTS",
+      );
+    }
+
+    const [selectedSlotKey] = selectedSlotKeys;
+
+    return activitySessions.filter(
+      (session) => getSessionTimeSlotKey(session) === selectedSlotKey,
+    );
+  }
+
+  if (activitySessions.length === 1 && uniqueRequestedSessionIds.length === 0) {
     return activitySessions;
   }
 
@@ -249,7 +348,7 @@ function resolveSelectedSessions(
 
   if (
     sessionSelectionMode === "SINGLE" &&
-    requestedSessionIds.length !== 1
+    uniqueRequestedSessionIds.length !== 1
   ) {
     throw createHttpError(
       "Please select exactly one session.",
@@ -260,7 +359,7 @@ function resolveSelectedSessions(
 
   if (
     sessionSelectionMode === "MULTIPLE" &&
-    requestedSessionIds.length === 0
+    uniqueRequestedSessionIds.length === 0
   ) {
     throw createHttpError(
       "Please select at least one session.",
@@ -269,11 +368,7 @@ function resolveSelectedSessions(
     );
   }
 
-  const sessionsById = new Map(
-    activitySessions.map((session) => [session.id, session]),
-  );
-
-  return [...new Set(requestedSessionIds)].map((sessionId) => {
+  return uniqueRequestedSessionIds.map((sessionId) => {
     const session = sessionsById.get(sessionId);
 
     if (!session) {
